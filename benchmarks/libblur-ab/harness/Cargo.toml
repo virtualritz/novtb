@@ -1,4 +1,4 @@
-# A/B timing of libblur 0.20 (the version citra pins) with novtb's threading
+# A/B timing of libblur 0.24 with novtb's threading
 # swapped out underneath it. See ../run.sh.
 [package]
 name = "libblur-ab"
@@ -7,7 +7,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-libblur = { version = "=0.20.0", default-features = false, features = ["avx", "sse"] }
+libblur = { version = "=0.24.0", default-features = false, features = ["avx", "sse"] }
 rayon = "1.12"
 
 [profile.release]

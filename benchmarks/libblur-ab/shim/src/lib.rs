@@ -1,4 +1,4 @@
-//! rayon-backed stand-in for the novtb API surface libblur 0.20 uses.
+//! rayon-backed stand-in for the novtb API surface libblur 0.20 and 0.24 use.
 //!
 //! `NOVTB_SHIM=static` (default) keeps novtb's partitioning -- one group per
 //! requested thread, same group size -- and runs the groups on rayon's global
@@ -154,6 +154,22 @@ pub trait ParallelZonedIterator: Sized + Send {
     fn for_each_enumerated<'scope, F>(self, thread_pool: &ThreadPool, f: F)
     where
         F: 'scope + Fn(usize, Self::Item) + Send + Sync;
+
+    fn for_each_with_context<'scope, F, C, CF>(self, pool: &ThreadPool, make_context: CF, f: F)
+    where
+        F: 'scope + Fn(&mut C, Self::Item) + Send + Sync,
+        C: Send,
+        CF: Fn() -> C + Send + Sync;
+
+    fn for_each_enumerated_with_context<'scope, F, C, CF>(
+        self,
+        pool: &ThreadPool,
+        make_context: CF,
+        f: F,
+    ) where
+        F: 'scope + Fn(usize, &mut C, Self::Item) + Send + Sync,
+        C: Send,
+        CF: Fn() -> C + Send + Sync;
 }
 
 /// Same as novtb: the group size each of `threads` workers gets, rounded up
@@ -162,31 +178,41 @@ fn group_size(rows: usize, threads: usize, chunk_size: usize) -> usize {
     rows.div_ceil(threads).div_ceil(chunk_size) * chunk_size
 }
 
-fn seq<'d, T: Send, F>(s: &'d mut [T], chunk_size: usize, exact: bool, base: usize, f: &F)
+/// Runs `f` over the chunks of `s` in order, with one context for all of them.
+fn seq<'d, T: Send, C, F>(s: &'d mut [T], chunk_size: usize, exact: bool, base: usize, ctx: &mut C, f: &F)
 where
-    F: Fn(usize, &'d mut [T]) + Send + Sync,
+    F: Fn(usize, &mut C, &'d mut [T]) + Send + Sync,
 {
     if exact {
         for (i, c) in s.chunks_exact_mut(chunk_size).enumerate() {
-            f(base + i, c);
+            f(base + i, ctx, c);
         }
     } else {
         for (i, c) in s.chunks_mut(chunk_size).enumerate() {
-            f(base + i, c);
+            f(base + i, ctx, c);
         }
     }
 }
 
-/// Shared driver: `exact` selects chunks_exact (drop tail) vs chunks (keep tail).
-fn drive<'d, T: Send, F>(slice: &'d mut [T], chunk_size: usize, pool: &ThreadPool, exact: bool, f: F)
-where
-    F: Fn(usize, &'d mut [T]) + Send + Sync,
+/// Shared driver. `exact` selects chunks_exact (drop tail) vs. chunks (keep
+/// tail). `static` mode makes one context per zone, as novtb does; `steal`
+/// mode uses rayon's `for_each_init`, which makes one per split job.
+fn drive<'d, T: Send, C: Send, CF, F>(
+    slice: &'d mut [T],
+    chunk_size: usize,
+    pool: &ThreadPool,
+    exact: bool,
+    make_context: CF,
+    f: F,
+) where
+    CF: Fn() -> C + Send + Sync,
+    F: Fn(usize, &mut C, &'d mut [T]) + Send + Sync,
 {
     if slice.is_empty() {
         return;
     }
     if pool.amount <= 1 {
-        seq(slice, chunk_size, exact, 0, &f);
+        seq(slice, chunk_size, exact, 0, &mut make_context(), &f);
         return;
     }
     if steal() {
@@ -194,19 +220,19 @@ where
             slice
                 .par_chunks_exact_mut(chunk_size)
                 .enumerate()
-                .for_each(|(i, c)| f(i, c));
+                .for_each_init(&make_context, |ctx, (i, c)| f(i, ctx, c));
         } else {
             slice
                 .par_chunks_mut(chunk_size)
                 .enumerate()
-                .for_each(|(i, c)| f(i, c));
+                .for_each_init(&make_context, |ctx, (i, c)| f(i, ctx, c));
         }
         return;
     }
     let rows = (slice.len() / chunk_size).max(1) * chunk_size;
     let gs = group_size(rows, pool.amount, chunk_size);
     if gs >= rows {
-        seq(slice, chunk_size, exact, 0, &f);
+        seq(slice, chunk_size, exact, 0, &mut make_context(), &f);
         return;
     }
     let per_group = gs / chunk_size;
@@ -214,41 +240,52 @@ where
         .par_chunks_mut(gs)
         .with_max_len(1)
         .enumerate()
-        .for_each(|(g, s)| seq(s, chunk_size, exact, g * per_group, &f));
+        .for_each(|(g, s)| seq(s, chunk_size, exact, g * per_group, &mut make_context(), &f));
 }
 
-impl<'data, T: Send> ParallelZonedIterator for ChunksExactMut<'data, T> {
-    type Item = &'data mut [T];
+macro_rules! zoned {
+    ($ty:ident, $exact:expr) => {
+        impl<'data, T: Send> ParallelZonedIterator for $ty<'data, T> {
+            type Item = &'data mut [T];
 
-    fn for_each<'scope, F>(self, pool: &ThreadPool, f: F)
-    where
-        F: 'scope + Fn(Self::Item) + Send + Sync,
-    {
-        drive(self.slice, self.chunk_size, pool, true, |_, c| f(c));
-    }
+            fn for_each<'scope, F>(self, pool: &ThreadPool, f: F)
+            where
+                F: 'scope + Fn(Self::Item) + Send + Sync,
+            {
+                drive(self.slice, self.chunk_size, pool, $exact, || (), |_, _, c| f(c));
+            }
 
-    fn for_each_enumerated<'scope, F>(self, pool: &ThreadPool, f: F)
-    where
-        F: 'scope + Fn(usize, Self::Item) + Send + Sync,
-    {
-        drive(self.slice, self.chunk_size, pool, true, f);
-    }
+            fn for_each_enumerated<'scope, F>(self, pool: &ThreadPool, f: F)
+            where
+                F: 'scope + Fn(usize, Self::Item) + Send + Sync,
+            {
+                drive(self.slice, self.chunk_size, pool, $exact, || (), |i, _, c| f(i, c));
+            }
+
+            fn for_each_with_context<'scope, F, C, CF>(self, pool: &ThreadPool, make_context: CF, f: F)
+            where
+                F: 'scope + Fn(&mut C, Self::Item) + Send + Sync,
+                C: Send,
+                CF: Fn() -> C + Send + Sync,
+            {
+                drive(self.slice, self.chunk_size, pool, $exact, make_context, |_, x, c| f(x, c));
+            }
+
+            fn for_each_enumerated_with_context<'scope, F, C, CF>(
+                self,
+                pool: &ThreadPool,
+                make_context: CF,
+                f: F,
+            ) where
+                F: 'scope + Fn(usize, &mut C, Self::Item) + Send + Sync,
+                C: Send,
+                CF: Fn() -> C + Send + Sync,
+            {
+                drive(self.slice, self.chunk_size, pool, $exact, make_context, f);
+            }
+        }
+    };
 }
 
-impl<'data, T: Send> ParallelZonedIterator for ChunksMut<'data, T> {
-    type Item = &'data mut [T];
-
-    fn for_each<'scope, F>(self, pool: &ThreadPool, f: F)
-    where
-        F: 'scope + Fn(Self::Item) + Send + Sync,
-    {
-        drive(self.slice, self.chunk_size, pool, false, |_, c| f(c));
-    }
-
-    fn for_each_enumerated<'scope, F>(self, pool: &ThreadPool, f: F)
-    where
-        F: 'scope + Fn(usize, Self::Item) + Send + Sync,
-    {
-        drive(self.slice, self.chunk_size, pool, false, f);
-    }
-}
+zoned!(ChunksExactMut, true);
+zoned!(ChunksMut, false);
