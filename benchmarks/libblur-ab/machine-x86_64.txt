@@ -1,0 +1,12 @@
+date: 2026-10-16
+Architecture:                            x86_64
+CPU(s):                                  12
+Model name:                              Intel(R) Xeon(R) E-2276M  CPU @ 2.80GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      6
+L3 cache:                                12 MiB (1 instance)
+kernel: 7.1.5-76070105-generic
+governor: powersave
+rustc: rustc 1.101.0-nightly (822182db4 2026-10-13)
+libblur: 0.20.0, rayon: 1.12.0, novtb: 34f365e (0.1.13)
+command: ROUNDS=5 BUDGET_MS=1000 ./run.sh > results-x86_64.csv

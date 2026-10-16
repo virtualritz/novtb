@@ -1,0 +1,12 @@
+# Runs one multi-threaded libblur call on a thread-less wasm target, to show
+# what novtb does there. See ../README.md.
+[package]
+name = "wasm-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libblur = { version = "=0.20.0", default-features = false }
+
+[workspace]

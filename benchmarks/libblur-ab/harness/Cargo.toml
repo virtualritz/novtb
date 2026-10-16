@@ -1,0 +1,19 @@
+# A/B timing of libblur 0.20 (the version citra pins) with novtb's threading
+# swapped out underneath it. See ../run.sh.
+[package]
+name = "libblur-ab"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libblur = { version = "=0.20.0", default-features = false, features = ["avx", "sse"] }
+rayon = "1.12"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# The novtb backend is patched in per build by ../run.sh.
+
+[workspace]

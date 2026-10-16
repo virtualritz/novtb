@@ -1,0 +1,12 @@
+# Drop-in replacement for `novtb` backed by rayon's persistent pool. Swapped in
+# for the real crate with `[patch.crates-io]` so libblur runs unmodified.
+[package]
+name = "novtb"
+version = "0.1.13"
+edition = "2024"
+publish = false
+
+[dependencies]
+rayon = "1.12"
+
+[workspace]
