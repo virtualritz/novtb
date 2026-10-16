@@ -14,8 +14,19 @@ repository = "https://github.com/awxkee/novtb.git"
 exclude = ["*.jpg", "./assets/*", "*.png", ".gitignore", ".github/*"]
 rust-version = "1.85.0"
 
+[features]
+## Run zones on rayon's global pool instead of spawning pinned scoped threads.
+## Always on for wasm targets, which cannot spawn `std::thread`s.
+rayon = ["dep:rayon"]
+
 [dependencies]
+rayon = { version = "1.10", optional = true }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 core_affinity = "0.8"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+rayon = "1.10"
 
 [package.metadata.docs.rs]
 # To build locally:

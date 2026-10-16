@@ -26,10 +26,8 @@
  * // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-use crate::{CORE_RING_INDEX, ThreadPool, odd_rounding_div_ceil};
+use crate::{ThreadPool, backend, odd_rounding_div_ceil};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::thread;
 
 pub fn parallel_range<'scope, F>(thread_pool: &ThreadPool, cap: usize, f: F)
 where
@@ -49,10 +47,8 @@ where
         return;
     }
 
-    thread::scope(|s| {
+    backend::scope(|s| {
         let job = Arc::new(f);
-        let cores = core_affinity::get_core_ids().unwrap_or_default();
-        let cores_len = cores.len().max(1);
 
         let mut base_offset = 0usize;
         let mut remaining = cap;
@@ -72,14 +68,9 @@ where
         }
 
         for (start, end) in groups {
-            let offset = CORE_RING_INDEX.fetch_add(1, Ordering::Relaxed);
             let job = Arc::clone(&job);
-            let core = cores.get(offset % cores_len).cloned();
 
             s.spawn(move || {
-                if let Some(core_id) = core {
-                    core_affinity::set_for_current(core_id);
-                }
                 (start..end).for_each(|i| job(i));
             });
         }
@@ -117,11 +108,9 @@ pub fn parallel_range_with_context<'scope, F, C, CF>(
         return;
     }
 
-    thread::scope(|s| {
+    backend::scope(|s| {
         let job = Arc::new(f);
         let make_context = Arc::new(make_context);
-        let cores = core_affinity::get_core_ids().unwrap_or_default();
-        let cores_len = cores.len().max(1);
 
         let mut base_offset = 0usize;
         let mut remaining = cap;
@@ -141,15 +130,10 @@ pub fn parallel_range_with_context<'scope, F, C, CF>(
         }
 
         for (start, end) in groups {
-            let offset = CORE_RING_INDEX.fetch_add(1, Ordering::Relaxed);
             let job = Arc::clone(&job);
             let make_context = Arc::clone(&make_context);
-            let core = cores.get(offset % cores_len).cloned();
 
             s.spawn(move || {
-                if let Some(core_id) = core {
-                    core_affinity::set_for_current(core_id);
-                }
                 // Each thread allocates its context once and reuses it
                 let mut ctx = make_context();
                 (start..end).for_each(|i| job(i, &mut ctx));
